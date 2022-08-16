@@ -1,0 +1,99 @@
+---
+title: "NYPD Shooting Data"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+This report will analyze the historical NYPD Shooting Data as part of DTSA5301: Data Science as a Field.
+
+```{r read_data, echo=TRUE}
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+shooting_data <- read.csv(url_in)
+```
+I will view the summary and first 6 rows of the dataset to get an initial understanding of the contents.
+```{r overview, echo=TRUE}
+summary(shooting_data)
+head(shooting_data)
+```
+Based upon the initial summary, the "Occur Date" and "Occur Time" columns are character-type. I am going to combine the occur date and times into one column, then update the data type using lubridate.
+```{r date_type, echo=TRUE}
+library(lubridate)
+library(tidyr)
+library(dplyr)
+
+shooting_data <- shooting_data %>% unite("Occur_Date_Time", c(OCCUR_DATE, OCCUR_TIME), sep=" ", na.rm=TRUE, remove=FALSE)
+
+shooting_data <- shooting_data %>%
+  mutate(Occur_Date_Time=as_datetime(Occur_Date_Time, format = "%m/%d/%Y %H:%M:%S", tz = "America/New_York"))
+
+##Remove original OCCUR_DATE and OCCUR_TIME as they are now united
+shooting_data <- shooting_data %>%
+     select(-c(OCCUR_DATE, OCCUR_TIME))
+```
+The jurisdiction code refers to where the incident occurred: 0=Patrol, 1=Transit, 2=Housing. I will change the jurisdiction code column to a character type rather than integer, since this is categorical data.
+```{r juris_char, echo=TRUE}
+shooting_data <- shooting_data %>%
+  mutate(JURISDICTION_CODE=as.character(JURISDICTION_CODE))
+```
+Next, I noticed that the provided "Lon_Lat" column is a combination of the given Latitude and Longitudes, and I don't need all three columns. I will remove Lon_Lat as this is a character class.
+
+Additionally, I reviewed the NYPD Shooting Data footnotes that accompany this dataset. I found that "X_COORD_CD" and "Y_COORD_CD" are topographic coordinates. I do not believe these will be used in the analysis and so may be removed.
+```{r no_coord, echo=TRUE}
+shooting_data <- shooting_data %>%
+  select(-c(Lon_Lat, X_COORD_CD, Y_COORD_CD))
+
+#Check the summary to ensure all data types are correct and no extraneous columns remain.
+summary(shooting_data)
+```
+Lastly, there are missing values in several of the columns, mainly related to the perpetrator and location of the incident. For missing locations, I plan to enter in "unknown". The same is true for the perpetrator details, as it would be unethical to try to impute that information.
+
+### Visualization and Analysis
+The first question I'd like to answer is: how does the number of incidents vary against the age of the victim?
+```{r age, echo=TRUE}
+library(ggplot2)
+ggplot(shooting_data, aes(fill=BORO, y=VIC_AGE_GROUP)) + 
+  geom_bar(position = "stack") + 
+  ggtitle("Shooting Incidents by Victim Age Group and Borough")
+```
+
+It appears that the highest number of shooting incidents across all victim age groups is in Brooklyn. I will summarize the data by borough to check.
+```{r boros, echo=TRUE}
+shooting_data %>% group_by(BORO) %>% summarise(n = n())
+```
+
+So yes, the most shootings have occurred in Brooklyn. This begs the question: is Brooklyn simply the most populated borough? How do these shooting counts differ as percentages of the population?
+
+As an additional analysis, I am choosing to create a heatmap of the shooting counts by latitude & longitude. This will give more granularity to the shooting by borough analysis, and look at which part of New York City has the densest concentration of shootings.
+
+```{r heatmap, echo = TRUE}
+ggplot(shooting_data, aes(x=Longitude, y=Latitude, col = BORO)) + geom_bin_2d()
+```
+
+It is now clear that the north side of Brooklyn, on the border with Queens, has the highest density of shootings, followed by the diagonal swath through Manhattan and the Bronx. 
+
+This graphic then begs the question: what landmarks are located in those areas? Are they busy intersections? Or perhaps extra-heavily populated housing?
+
+### Modeling the Number of Shootings
+
+The previous two graphics showed that the number of shootings depended on the victim's age group and the borough in which it occurred, so those categories will be used to model the number of shootings.
+
+```{r model, echo=TRUE}
+#Try to guess the number of shootings based upon the BORO and victim age group
+
+boro_by_age <- shooting_data %>% group_by(BORO, VIC_AGE_GROUP) %>% summarize(number_shootings = n()) %>% subset(VIC_AGE_GROUP != "UNKNOWN")
+
+model <- lm(number_shootings ~ BORO + VIC_AGE_GROUP, boro_by_age)
+
+boro_by_age <- boro_by_age %>% ungroup() %>% mutate(predicted_shootings = predict(model))
+
+ggplot(boro_by_age, aes(number_shootings, predicted_shootings, color = VIC_AGE_GROUP)) + geom_point()
+```
+
+This model performs reasonably well with an adjusted R-squared of 0.67. Looking at the graph of predicted shootings vs. the actual number of shootings shows that the tail end of shootings (less than 500 or so) is not well predicted by the model. Therefore, there is an opportunity for additional feature engineering here.
+
+### Sources of Bias
+Much of the potential bias in this report stems from not being an NYC native, meaning that prior familiarity with New York shootings is limited to the news or popular culture. Additionally, having lived in suburban areas for most of my life, my understanding of the specific intricacies and potential tensions that would motivate shooting violence are limited and may contain assumptions. In an effort to minimize this bias, I looked at the information from (1) columns which had more complete entries, therefore minimizing bias in aggregating data, and (2) a geographic perspective. The geographic analysis leads to many questions, but doesn't impart as much bias in the representation of the data.
+
+## Conclusion
+Initial analysis of the Historical NYPD Shooting Data shows that the borough of Brooklyn has had the highest number of shootings, both by age group and overall. Additionally, looking into the number of incidents by latitude and longitude shows that the densest shooting locations are on the border between boroughs: the first being between Brooklyn and Queens, followed by the border of Manhattan and the Bronx.
